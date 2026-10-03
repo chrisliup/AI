@@ -1,0 +1,4 @@
+anthropic>=0.40
+fal-client>=0.5
+PyYAML>=6.0
+Pillow>=10.0

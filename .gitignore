@@ -1,0 +1,17 @@
+# 密钥
+.env
+
+# 生成的项目素材（图片 / 视频体积大，且花钱生成）
+projects/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,60 @@
+# AI 故事短片工作流 —— 全局配置
+# 每个项目创建时会复制一份到项目目录，可以按项目单独修改。
+
+# ---------- 画面基调 ----------
+aspect_ratio: "16:9"          # 16:9 横屏 / 9:16 竖屏 / 1:1
+resolution: "1080p"           # 成片分辨率：720p / 1080p
+fps: 24
+dialogue_language: "中文"      # 台词语言（Kling / Seedance 原生音频支持中文）
+
+# ---------- 剧本 / 分镜（Claude）----------
+llm:
+  model: "claude-sonnet-5-5"   # 想要更强的编剧能力可改为 claude-opus-5-5
+  max_tokens: 8000
+
+# ---------- 图像（角色定妆照 + 关键帧）----------
+image:
+  # 文生图：用于角色定妆照
+  t2i_model: "fal-ai/nano-banana-2"
+  # 参考图编辑：把定妆照放进具体场景，保持角色一致
+  edit_model: "fal-ai/nano-banana-2/edit"
+  resolution: "2K"             # 0.5K / 1K / 2K / 4K（2K 计费 1.5 倍）
+  candidates: 3                # 每次生成几张候选，供你挑选（1-4）
+
+# ---------- 视频（图生视频）----------
+video:
+  # 可选：seedance2 / kling3（在下方 models 中定义）
+  default_model: "kling3"
+  generate_audio: true         # 原生音效 + 对白（口型同步）
+  # 是否把"下一镜的关键帧"作为本镜的尾帧，让镜头衔接更顺（会限制动作自由度）
+  chain_end_frame: false
+
+  models:
+    seedance2:
+      endpoint: "bytedance/seedance-2.0/image-to-video"
+      image_field: "image_url"
+      end_image_field: "end_image_url"
+      durations: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      supports_aspect_ratio: true
+      extra:
+        resolution: "1080p"
+      # 按 token 计费，此处为粗略估算（美元/秒），仅用于开跑前提示
+      est_usd_per_sec: 0.30
+    kling3:
+      endpoint: "fal-ai/kling-video/v3/pro/image-to-video"
+      image_field: "start_image_url"
+      end_image_field: "end_image_url"
+      durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      # Kling 支持 elements：把角色定妆照作为身份参考，提示词中用 @Element1 引用
+      use_character_elements: true
+      extra:
+        negative_prompt: "blur, distort, low quality, extra fingers, deformed face"
+      est_usd_per_sec: 0.14
+
+# ---------- 合成 ----------
+assemble:
+  subtitles: true              # 根据分镜台词生成 .srt 并烧录进成片
+  burn_subtitles: true
+  bgm: null                    # 背景音乐文件路径，如 "assets/bgm.mp3"；null 则不加
+  bgm_volume: 0.18             # 背景音乐音量（相对原声）
+  crossfade: 0.0               # 镜头之间的淡入淡出秒数，0 为硬切
