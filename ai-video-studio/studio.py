@@ -33,6 +33,11 @@ import providers as P
 ROOT = Path(__file__).resolve().parent
 PROJECTS = ROOT / "projects"
 
+# Windows 终端 / 重定向输出时默认编码可能是 GBK，打印 ✓ 等字符会报错
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8", errors="replace")
+
 
 # =========================================================================== #
 # 项目与配置
@@ -449,6 +454,7 @@ def _ts(t: float) -> str:
 
 
 def cmd_assemble(args):
+    P.require_ffmpeg()
     proj = Project(args.name)
     sb = proj.storyboard()
     acfg = proj.cfg["assemble"]
@@ -536,8 +542,9 @@ def cmd_assemble(args):
         afilter = (f"[1:a]volume={vol},afade=t=in:d=1[bg];"
                    f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]")
     if acfg.get("subtitles") and acfg.get("burn_subtitles") and entries:
-        esc = str(srt).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
-        vfilter = f"subtitles='{esc}':force_style='FontSize=18,Outline=1,MarginV=28'"
+        # ffmpeg 在 output/ 下运行，只写文件名，避免 Windows 盘符 "C:" 在滤镜里的转义问题
+        vfilter = (f"subtitles={srt.name}:force_style="
+                   f"'FontName={P.SUBTITLE_FONT},FontSize=18,Outline=1,MarginV=28'")
 
     if afilter or vfilter:
         fc = []
@@ -551,7 +558,7 @@ def cmd_assemble(args):
     else:
         cmd += ["-c", "copy"]
     cmd += ["-movflags", "+faststart", str(final)]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, cwd=out_dir)
     dur, _ = _probe(final)
     print(f"✓ 成片：{final}（{dur:.1f} 秒）")
     if entries:

@@ -8,12 +8,44 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
 
+IS_WIN = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
+
+
+def _load_dotenv(path: Path):
+    """读取项目根目录的 .env（KEY=VALUE 格式）。已经设置的环境变量优先，不会被覆盖。"""
+    if not path.exists():
+        return
+    for line in path.read_text("utf-8-sig").splitlines():  # -sig：兼容 Windows 记事本写入的 BOM
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip().removeprefix("export ").strip(), v.strip().strip('"').strip("'")
+        os.environ.setdefault(k, v)
+
+
+_load_dotenv(Path(__file__).resolve().parent / ".env")
+
 MOCK = os.environ.get("STUDIO_MOCK") == "1"
+
+
+def require_ffmpeg():
+    """确认 ffmpeg / ffprobe 可用，否则按系统给出安装提示后退出。"""
+    missing = [b for b in ("ffmpeg", "ffprobe") if not shutil.which(b)]
+    if not missing:
+        return
+    hint = ("winget install --id Gyan.FFmpeg -e   （装完重开终端）" if IS_WIN
+            else "brew install ffmpeg" if IS_MAC
+            else "sudo apt install ffmpeg")
+    sys.exit(f"找不到 {' / '.join(missing)}，请先安装：\n  {hint}")
 
 
 # --------------------------------------------------------------------------- #
@@ -124,6 +156,26 @@ def generate_video(endpoint: str, args: dict, out_path: Path, label: str, durati
 # --------------------------------------------------------------------------- #
 _ASPECT = {"16:9": (1280, 720), "9:16": (720, 1280), "1:1": (1024, 1024), "21:9": (1680, 720)}
 
+# 能显示中文的系统字体（按顺序尝试）
+_CJK_FONTS = {
+    "win32": ["C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf", "C:/Windows/Fonts/simsun.ttc"],
+    "darwin": ["/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/STHeiti Medium.ttc",
+               "/System/Library/Fonts/Hiragino Sans GB.ttc"],
+}.get(sys.platform, ["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                     "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"])
+
+# 烧录字幕时 libass 使用的字体名
+SUBTITLE_FONT = "Microsoft YaHei" if IS_WIN else "PingFang SC" if IS_MAC else "Noto Sans CJK SC"
+
+
+def _cjk_font(size: int):
+    from PIL import ImageFont
+
+    for f in _CJK_FONTS:
+        if Path(f).exists():
+            return ImageFont.truetype(f, size)
+    return ImageFont.load_default()
+
 
 def _mock_image(path: Path, text: str, aspect: str):
     from PIL import Image, ImageDraw
@@ -133,11 +185,12 @@ def _mock_image(path: Path, text: str, aspect: str):
     hue = sum(map(ord, text)) % 255
     img = Image.new("RGB", (w, h), (40 + hue // 3, 60, 90 + hue // 2))
     d = ImageDraw.Draw(img)
-    d.multiline_text((40, 40), text, fill="white", spacing=8)
+    d.multiline_text((40, 40), text, fill="white", spacing=8, font=_cjk_font(48))
     img.save(path)
 
 
 def _mock_video(path: Path, label: str, duration: int) -> Path:
+    require_ffmpeg()
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["ffmpeg", "-y", "-loglevel", "error",
