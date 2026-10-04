@@ -151,6 +151,14 @@ def generate_video(endpoint: str, args: dict, out_path: Path, label: str, durati
     return download(result["video"]["url"], out_path)
 
 
+def create_voice(endpoint: str, audio: Path, label: str) -> str:
+    """用一段 5-30 秒的录音克隆声音，返回 voice_id。"""
+    result = fal_run(endpoint, {"voice_url": upload(audio)}, log_prefix=f"[{label}] ")
+    if result.get("_mock"):
+        return f"mock-voice-{audio.parent.name}"
+    return result["voice_id"]
+
+
 # --------------------------------------------------------------------------- #
 # 模拟素材
 # --------------------------------------------------------------------------- #

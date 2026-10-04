@@ -47,6 +47,8 @@ video:
       durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
       # Kling 支持 elements：把角色定妆照作为身份参考，提示词中用 @Element1 引用
       use_character_elements: true
+      # 声音克隆：characters/<角色id>/voice.mp3（或 .wav）存在时，先创建 voice_id 再绑定到该角色
+      voice_endpoint: "fal-ai/kling-video/create-voice"
       extra:
         negative_prompt: "blur, distort, low quality, extra fingers, deformed face"
       est_usd_per_sec: 0.14

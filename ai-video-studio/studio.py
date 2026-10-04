@@ -235,6 +235,49 @@ def _ensure_side_ref(proj: Project, ch: dict) -> Path:
     return side
 
 
+VOICE_EXTS = ("mp3", "wav", "mp4", "mov")
+DEFAULT_VOICE_ENDPOINT = "fal-ai/kling-video/create-voice"  # 旧项目的 config 里没有 voice_endpoint 时使用
+
+
+def voice_sample(proj: Project, cid: str) -> Path | None:
+    folder = proj.char_dir(cid)
+    return next((folder / f"voice.{e}" for e in VOICE_EXTS if (folder / f"voice.{e}").exists()), None)
+
+
+def _ensure_voice(proj: Project, ch: dict, endpoint: str) -> str | None:
+    """角色有录音 voice.* 时克隆声音，voice_id 缓存在 voice.json；换了录音会自动重建。"""
+    sample = voice_sample(proj, ch["id"])
+    if not sample:
+        return None
+    cache = proj.char_dir(ch["id"]) / "voice.json"
+    stamp = {"source": sample.name, "mtime_ns": sample.stat().st_mtime_ns}
+    if cache.exists():
+        saved = json.loads(cache.read_text("utf-8"))
+        if {k: saved.get(k) for k in stamp} == stamp:
+            return saved["voice_id"]
+    print(f"  → 用 {sample.name} 克隆 {ch['name']} 的声音…")
+    vid = P.create_voice(endpoint, sample, label=f"{ch['name']}-voice")
+    cache.write_text(json.dumps({**stamp, "voice_id": vid}, ensure_ascii=False, indent=2), "utf-8")
+    return vid
+
+
+def _warn_voice(proj: Project, shot: dict, cmap: dict, element_names: list[str], mname: str):
+    """说话的角色有录音、但这一镜用不上克隆声音时提醒。"""
+    if not shot.get("dialogue"):
+        return
+    speaker = _split_dialogue(shot["dialogue"])[0]
+    ch = next((c for c in cmap.values() if c["name"] == speaker), None)
+    if not ch or not voice_sample(proj, ch["id"]) or speaker in element_names:
+        return
+    if not proj.cfg["video"]["models"][mname].get("use_character_elements"):
+        why = f"模型 {mname} 不支持声音克隆（请用 kling3）"
+    elif ch["id"] not in shot.get("characters", []):
+        why = f"{speaker} 不在这一镜的 characters 里"
+    else:
+        why = "这一镜角色超过 3 个，只有前 3 个能绑定"
+    print(f"  ! 镜头 {shot['id']}：{why}，台词会用模型自动生成的声音")
+
+
 # =========================================================================== #
 # 3. 关键帧
 # =========================================================================== #
@@ -319,6 +362,8 @@ def _video_prompt(shot: dict, cmap: dict, lang: str, element_names: list[str]) -
     if shot.get("dialogue"):
         speaker, line = _split_dialogue(shot["dialogue"])
         who = speaker or "The character"
+        if speaker in element_names:  # 用 @ElementN 指明说话人，绑定的克隆声音才会生效
+            who = f"@Element{element_names.index(speaker) + 1} ({speaker})"
         parts.append(f'{who} speaks in {lang}, clearly and naturally, with accurate lip sync: "{line}"')
     else:
         parts.append("No dialogue.")
@@ -382,10 +427,14 @@ def cmd_videos(args):
                 ch = cmap[cid]
                 front = chosen(proj.char_dir(cid), "png")
                 side = _ensure_side_ref(proj, ch)
-                elements.append({"frontal_image_url": P.upload(front),
-                                 "reference_image_urls": [P.upload(side)]})
+                el = {"frontal_image_url": P.upload(front), "reference_image_urls": [P.upload(side)]}
+                vid = _ensure_voice(proj, ch, m.get("voice_endpoint", DEFAULT_VOICE_ENDPOINT))
+                if vid:
+                    el["voice_id"] = vid
+                elements.append(el)
                 element_names.append(ch["name"])
             payload["elements"] = elements
+        _warn_voice(proj, s, cmap, element_names, mname)
 
         payload["prompt"] = _video_prompt(s, cmap, lang, element_names)
         (folder / "request.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
@@ -646,7 +695,9 @@ def cmd_status(args):
     print(f"《{sb['title']}》")
     for c in sb["characters"]:
         f = proj.char_dir(c["id"])
-        print(f"  角色 {c['name']:<8} 候选 {len(candidates(f, 'png'))}  选定 {mark(chosen(f, 'png'))}")
+        voice = voice_sample(proj, c["id"])
+        print(f"  角色 {c['name']:<8} 候选 {len(candidates(f, 'png'))}  选定 {mark(chosen(f, 'png'))}"
+              f"  声音 {voice.name if voice else '自动'}")
     print("  镜头  关键帧(候选/选定)  视频(候选/选定)")
     for s in sb["shots"]:
         k, v = proj.shot_dir("keyframes", s["id"]), proj.shot_dir("clips", s["id"])
