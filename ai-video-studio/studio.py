@@ -11,7 +11,9 @@
   python studio.py pick       myfilm character lin 2  # 选定候选
   python studio.py keyframes  myfilm                  # 生成每个镜头的关键帧候选
   python studio.py pick       myfilm keyframe 3 1
-  python studio.py videos     myfilm                  # 图生视频（会先估算费用）
+  python studio.py endframes  myfilm                  # （可选）生成每个镜头的尾帧候选，让镜头衔接更顺
+  python studio.py pick       myfilm endframe 3 2
+  python studio.py videos     myfilm                  # 图生视频（会先估算费用）；--end-frame own 使用尾帧
   python studio.py assemble   myfilm                  # 合成成片
   python studio.py review     myfilm                  # 生成审片页 review.html
   python studio.py status     myfilm
@@ -131,6 +133,7 @@ Return ONLY a JSON object (no prose) with this schema:
      "shot_type": str,       // wide / medium / close-up / insert ...
      "keyframe_prompt": str, // English. The FIRST frame as a still image: setting, composition, pose, expression. Refer to characters by their name.
      "motion_prompt": str,   // English. What moves during the shot: action, camera move, ambient motion, sound cues.
+     "end_frame_prompt": str, // English. The LAST frame as a still image, after the action has played out; compose it so it leads naturally into the next shot's first frame (screen direction, positions, lighting).
      "dialogue": str}        // "<speaker name>：<line>" in the requested language, or "" if none
   ]
 }"""
@@ -334,8 +337,88 @@ def cmd_keyframes(args):
 
 
 # =========================================================================== #
+# 3b. 尾帧（end_frame_mode: own）
+# =========================================================================== #
+def _end_frame_prompt(shot: dict) -> str:
+    """分镜里没写 end_frame_prompt 的旧项目，用运动描述推出"动作结束时"的画面。"""
+    if shot.get("end_frame_prompt"):
+        return shot["end_frame_prompt"]
+    return f"The final moment of this shot, after this action has fully played out: {shot['motion_prompt']}"
+
+
+def cmd_endframes(args):
+    proj = Project(args.name)
+    sb = proj.storyboard()
+    cmap = _char_map(sb)
+    icfg = proj.cfg["image"]
+    all_shots = sb["shots"]
+    for shot in proj.shots(args.shots):
+        folder = proj.shot_dir("endframes", shot["id"])
+        folder.mkdir(parents=True, exist_ok=True)
+        if chosen(folder, "png") and not args.force:
+            print(f"· 镜头 {shot['id']} 已有尾帧，跳过（--force 重新生成）")
+            continue
+        start = chosen(proj.shot_dir("keyframes", shot["id"]), "png")
+        if not start:
+            sys.exit(f"镜头 {shot['id']} 还没有选定关键帧（首帧），先运行 keyframes / pick")
+
+        # 参考图 1 = 本镜首帧（保证场景、光线、服装连贯），之后是角色定妆照
+        refs = [P.upload(start)]
+        lines = ["Reference image 1 is the FIRST frame of this same shot: keep the same location, lighting, "
+                 "color grade, wardrobe and overall camera setup."]
+        for cid in shot.get("characters", []):
+            ch = cmap[cid]
+            img = chosen(proj.char_dir(cid), "png")
+            if not img:
+                sys.exit(f"角色 {ch['name']}（{cid}）还没有选定定妆照，先运行 characters / pick")
+            refs.append(P.upload(img))
+            lines.append(f"Reference image {len(refs)} is {ch['name']}: {ch['description']}.")
+        # 下一镜的首帧：让本镜结尾的构图自然过渡过去
+        idx = [x["id"] for x in all_shots].index(shot["id"])
+        nxt = chosen(proj.shot_dir("keyframes", all_shots[idx + 1]["id"]), "png") if idx + 1 < len(all_shots) else None
+        if nxt and not args.no_bridge:
+            refs.append(P.upload(nxt))
+            lines.append(f"Reference image {len(refs)} is the FIRST frame of the NEXT shot: compose this final frame so "
+                         "the cut into it feels smooth (consistent screen direction, character positions and lighting), "
+                         "but do not copy it.")
+
+        prompt = " ".join(lines) + (
+            f" Create the LAST frame of this shot as a single cinematic film still: {_end_frame_prompt(shot)}. "
+            f"Shot size: {shot.get('shot_type', 'medium')}. Visual style: {sb['style']}. "
+            "Keep every character's face, hairstyle and clothing exactly the same as in their reference image. "
+            "No text, no watermark, no split screen.")
+        if args.note:
+            prompt += f" {args.note}"
+
+        first = next_index(folder, "png")
+        n = icfg["candidates"]
+        outs = [folder / f"cand_{first + i}.png" for i in range(n)]
+        print(f"→ 镜头 {shot['id']}：生成 {n} 张尾帧候选{'（参考下一镜首帧）' if nxt and not args.no_bridge else ''}…")
+        P.generate_images(icfg["edit_model"], {
+            "prompt": prompt, "image_urls": refs, "num_images": n, "aspect_ratio": proj.cfg["aspect_ratio"],
+            "resolution": icfg["resolution"], "output_format": "png"}, outs, label=f"shot{shot['id']}-end")
+        (folder / "prompt.txt").write_text(prompt, "utf-8")
+        auto_pick(folder, "png")
+    _write_review(proj)
+    print(f"✓ 完成。在 review.html 挑选：python studio.py pick {proj.name} endframe <镜头号> <候选编号>")
+    print(f"  然后：python studio.py videos {proj.name} --end-frame own")
+
+
+# =========================================================================== #
 # 4. 图生视频
 # =========================================================================== #
+END_FRAME_MODES = ("none", "next", "own")
+
+
+def _end_frame_mode(vcfg: dict, args) -> str:
+    """命令行 --end-frame 优先；其次 config 的 end_frame_mode；旧配置 chain_end_frame: true 等同 next。"""
+    mode = getattr(args, "end_frame", None) or vcfg.get("end_frame_mode") or (
+        "next" if vcfg.get("chain_end_frame") else "none")
+    if mode not in END_FRAME_MODES:
+        sys.exit(f"end_frame_mode 只能是 {' / '.join(END_FRAME_MODES)}，当前是 {mode!r}")
+    return mode
+
+
 def _snap(d: int, allowed: list[int]) -> int:
     return min(allowed, key=lambda a: abs(a - d))
 
@@ -361,6 +444,8 @@ def _video_prompt(shot: dict, cmap: dict, lang: str, element_names: list[str]) -
     parts.append(motion if motion.endswith((".", "!", "?", "。")) else motion + ".")
     if shot.get("dialogue"):
         speaker, line = _split_dialogue(shot["dialogue"])
+        if line.isascii():  # 纯英文台词（如英文咒语）不要按 dialogue_language 念
+            lang = "English"
         who = speaker or "The character"
         if speaker in element_names:  # 用 @ElementN 指明说话人，绑定的克隆声音才会生效
             who = f"@Element{element_names.index(speaker) + 1} ({speaker})"
@@ -389,6 +474,16 @@ def cmd_videos(args):
         if not chosen(proj.shot_dir("keyframes", s["id"]), "png"):
             sys.exit(f"镜头 {s['id']} 还没有选定关键帧，先运行 keyframes / pick")
 
+    end_mode = _end_frame_mode(vcfg, args)
+    if end_mode != "none" and not m.get("end_image_field"):
+        print(f"! 模型 {mname} 不支持尾帧，忽略 end_frame_mode={end_mode}")
+        end_mode = "none"
+    if end_mode == "own":
+        missing = [s["id"] for s in todo if not chosen(proj.shot_dir("endframes", s["id"]), "png")]
+        if missing:
+            sys.exit(f"镜头 {','.join(map(str, missing))} 还没有选定尾帧，先运行 "
+                     f"python studio.py endframes {proj.name} --shots {','.join(map(str, missing))}")
+
     secs = sum(_snap(s["duration"], m["durations"]) for s in todo) * args.takes
     est = secs * m.get("est_usd_per_sec", 0)
     print(f"模型 {mname}（{m['endpoint']}）  镜头 {len(todo)} 个 × {args.takes} 条  共 {secs} 秒")
@@ -411,13 +506,16 @@ def cmd_videos(args):
             payload["aspect_ratio"] = proj.cfg["aspect_ratio"]
         payload.update(m.get("extra", {}))
 
-        # 尾帧衔接
-        if vcfg.get("chain_end_frame") and m.get("end_image_field"):
+        # 尾帧：next = 下一镜首帧；own = 本镜单独生成的尾帧
+        end = None
+        if end_mode == "next":
             idx = [x["id"] for x in all_shots].index(s["id"])
             if idx + 1 < len(all_shots):
-                nxt = chosen(proj.shot_dir("keyframes", all_shots[idx + 1]["id"]), "png")
-                if nxt:
-                    payload[m["end_image_field"]] = P.upload(nxt)
+                end = chosen(proj.shot_dir("keyframes", all_shots[idx + 1]["id"]), "png")
+        elif end_mode == "own":
+            end = chosen(proj.shot_dir("endframes", s["id"]), "png")
+        if end:
+            payload[m["end_image_field"]] = P.upload(end)
 
         # Kling：角色身份参考
         element_names = []
@@ -462,6 +560,8 @@ def cmd_pick(args):
         (folder / "ref_side.png").unlink(missing_ok=True)
     elif args.kind == "keyframe":
         folder, ext = proj.shot_dir("keyframes", int(args.target)), "png"
+    elif args.kind == "endframe":
+        folder, ext = proj.shot_dir("endframes", int(args.target)), "png"
     else:
         folder, ext = proj.shot_dir("clips", int(args.target)), "mp4"
     src = folder / f"cand_{args.index}.{ext}"
@@ -588,8 +688,14 @@ def cmd_assemble(args):
             bgm_path = ROOT / bgm
         cmd += ["-stream_loop", "-1", "-i", str(bgm_path)]
         vol = acfg.get("bgm_volume", 0.18)
-        afilter = (f"[1:a]volume={vol},afade=t=in:d=1[bg];"
-                   f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]")
+        if acfg.get("bgm_ducking", True):
+            # 台词/音效响起时自动压低背景音乐（侧链压缩），说完再恢复
+            afilter = (f"[1:a]volume={vol},afade=t=in:d=1[bg];[0:a]asplit=2[main][sc];"
+                       f"[bg][sc]sidechaincompress=threshold=0.02:ratio=8:attack=15:release=400[bgd];"
+                       f"[main][bgd]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]")
+        else:
+            afilter = (f"[1:a]volume={vol},afade=t=in:d=1[bg];"
+                       f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]")
     if acfg.get("subtitles") and acfg.get("burn_subtitles") and entries:
         # ffmpeg 在 output/ 下运行，只写文件名，避免 Windows 盘符 "C:" 在滤镜里的转义问题
         vfilter = (f"subtitles={srt.name}:force_style="
@@ -643,6 +749,9 @@ def _write_review(proj: Project):
                     f'<div class="grid">{gallery(proj.char_dir(c["id"]), "png", "character", c["id"])}</div></section>')
     rows.append("<h2>镜头</h2>")
     for s in sb["shots"]:
+        ef = proj.shot_dir("endframes", s["id"])
+        end_html = (f'<h4>尾帧</h4><div class="grid">{gallery(ef, "png", "endframe", s["id"])}</div>'
+                    if ef.exists() else "")
         rows.append(
             f'<section><h3>镜头 {s["id"]} <small>{s.get("shot_type", "")} · {s["duration"]}s · '
             f'{", ".join(s.get("characters", []))}</small></h3>'
@@ -650,6 +759,7 @@ def _write_review(proj: Project):
             f'<b>运动</b> {html.escape(s["motion_prompt"])}<br>'
             f'<b>台词</b> {html.escape(s.get("dialogue") or "—")}</p>'
             f'<h4>关键帧</h4><div class="grid">{gallery(proj.shot_dir("keyframes", s["id"]), "png", "keyframe", s["id"])}</div>'
+            f'{end_html}'
             f'<h4>视频</h4><div class="grid">{gallery(proj.shot_dir("clips", s["id"]), "mp4", "clip", s["id"], "video")}</div>'
             f'</section>')
     final = proj.dir / "output" / f"{proj.name}_final.mp4"
@@ -698,11 +808,13 @@ def cmd_status(args):
         voice = voice_sample(proj, c["id"])
         print(f"  角色 {c['name']:<8} 候选 {len(candidates(f, 'png'))}  选定 {mark(chosen(f, 'png'))}"
               f"  声音 {voice.name if voice else '自动'}")
-    print("  镜头  关键帧(候选/选定)  视频(候选/选定)")
+    print(f"  尾帧模式 {_end_frame_mode(proj.cfg['video'], None)}")
+    print("  镜头  关键帧(候选/选定)  尾帧(候选/选定)  视频(候选/选定)")
     for s in sb["shots"]:
-        k, v = proj.shot_dir("keyframes", s["id"]), proj.shot_dir("clips", s["id"])
+        k, e, v = (proj.shot_dir(kind, s["id"]) for kind in ("keyframes", "endframes", "clips"))
         print(f"  {s['id']:>3}    {len(candidates(k, 'png'))}/{mark(chosen(k, 'png'))}"
-              f"               {len(candidates(v, 'mp4'))}/{mark(chosen(v, 'mp4'))}")
+              f"               {len(candidates(e, 'png'))}/{mark(chosen(e, 'png'))}"
+              f"             {len(candidates(v, 'mp4'))}/{mark(chosen(v, 'mp4'))}")
     final = proj.dir / "output" / f"{proj.name}_final.mp4"
     print(f"  成片 {mark(final.exists())}")
 
@@ -742,6 +854,14 @@ def main():
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_keyframes)
 
+    p = sub.add_parser("endframes", help="生成尾帧候选（配合 --end-frame own）")
+    p.add_argument("name")
+    p.add_argument("--shots", help="只处理这些镜头，如 1,3,5")
+    p.add_argument("--note", help="追加到提示词的补充说明")
+    p.add_argument("--no-bridge", action="store_true", help="不参考下一镜的首帧")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_endframes)
+
     p = sub.add_parser("videos", help="图生视频")
     p.add_argument("name")
     p.add_argument("--shots", help="只处理这些镜头，如 2,4")
@@ -749,11 +869,13 @@ def main():
     p.add_argument("--takes", type=int, default=1, help="每个镜头生成几条")
     p.add_argument("--force", action="store_true", help="已选定也重新生成")
     p.add_argument("-y", "--yes", action="store_true", help="跳过费用确认")
+    p.add_argument("--end-frame", choices=END_FRAME_MODES,
+                   help="尾帧模式，覆盖 config：none 不用 / next 用下一镜首帧 / own 用 endframes 生成的尾帧")
     p.set_defaults(func=cmd_videos)
 
     p = sub.add_parser("pick", help="选定某个候选")
     p.add_argument("name")
-    p.add_argument("kind", choices=["character", "keyframe", "clip"])
+    p.add_argument("kind", choices=["character", "keyframe", "endframe", "clip"])
     p.add_argument("target", help="角色 id 或镜头号")
     p.add_argument("index", type=int, help="候选编号")
     p.set_defaults(func=cmd_pick)

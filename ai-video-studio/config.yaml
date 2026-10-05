@@ -23,11 +23,15 @@ image:
 
 # ---------- 视频（图生视频）----------
 video:
-  # 可选：seedance2 / kling3（在下方 models 中定义）
+  # 可选：seedance2 / kling3 / wan3（在下方 models 中定义）
   default_model: "kling3"
   generate_audio: true         # 原生音效 + 对白（口型同步）
-  # 是否把"下一镜的关键帧"作为本镜的尾帧，让镜头衔接更顺（会限制动作自由度）
-  chain_end_frame: false
+  # 尾帧模式（首帧 + 尾帧生成视频，让镜头衔接更顺，但会限制动作自由度）：
+  #   none = 只用首帧
+  #   next = 用"下一镜的关键帧"作本镜尾帧（旧配置 chain_end_frame: true 等同于此）
+  #   own  = 用 endframes 步骤为本镜单独生成并挑选的尾帧
+  # 也可以在 videos 命令上用 --end-frame 临时覆盖
+  end_frame_mode: "none"
 
   models:
     seedance2:
@@ -52,6 +56,24 @@ video:
       extra:
         negative_prompt: "blur, distort, low quality, extra fingers, deformed face"
       est_usd_per_sec: 0.14
+    wan3:
+      endpoint: "alibaba/wan-3.0-prime/image-to-video"
+      image_field: "start_image_url"
+      end_image_field: "end_image_url"
+      durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      supports_aspect_ratio: true
+      extra:
+        resolution: "720p"       # 480p $0.068/秒 · 720p $0.14/秒 · 1080p $0.28/秒
+        audio: true              # Wan 的原生音频开关字段名是 audio
+      est_usd_per_sec: 0.14
+    minimax3:
+      endpoint: "minimax/h3/image-to-video"
+      image_field: "image_url"
+      end_image_field: "end_image_url"
+      durations: [5, 6, 7, 8, 9, 10]   # MiniMax H3 最短 5 秒
+      extra:
+        resolution: "768P"       # 480P $0.05/秒 · 768P $0.06/秒 · 2K $0.13/秒 · 4K $0.16/秒；无原生音频
+      est_usd_per_sec: 0.06
 
 # ---------- 合成 ----------
 assemble:
@@ -59,4 +81,5 @@ assemble:
   burn_subtitles: true
   bgm: null                    # 背景音乐文件路径，如 "assets/bgm.mp3"；null 则不加
   bgm_volume: 0.18             # 背景音乐音量（相对原声）
+  bgm_ducking: false           # true = 台词/音效响起时自动压低背景音乐
   crossfade: 0.0               # 镜头之间的淡入淡出秒数，0 为硬切

@@ -84,10 +84,15 @@ python studio.py keyframes subway
 python studio.py pick subway keyframe 2 3
 #    单独重做：python studio.py keyframes subway --shots 2 --force --note "低机位，更暗"
 
+# 4b.（可选）尾帧：每镜再生成一张"动作结束时"的画面，视频按首帧→尾帧生成，镜头衔接更顺
+python studio.py endframes subway
+python studio.py pick subway endframe 2 1
+
 # 5. 图生视频（先显示预估费用，确认后开跑）
 python studio.py videos subway                  # 每镜 1 条
 python studio.py videos subway --shots 3 --takes 2   # 某镜多拍两条挑
 python studio.py videos subway --shots 1 --model seedance2 --force  # 换模型重拍
+python studio.py videos subway --end-frame own  # 首帧 + 尾帧模式（需先跑 endframes）
 python studio.py pick subway clip 3 2
 
 # 6. 合成
@@ -109,6 +114,7 @@ projects/subway/
 ├── storyboard.yaml      # 分镜 ← 最主要的人工编辑点
 ├── characters/lin/      # cand_*.png 候选, chosen.png 选定, ref_side.png 侧面参考
 ├── keyframes/shot_01/   # cand_*.png, chosen.png, prompt.txt（实际发送的提示词）
+├── endframes/shot_01/   # 尾帧（可选），结构同 keyframes
 ├── clips/shot_01/       # cand_*.mp4, chosen.mp4, request.json（实际请求参数）
 ├── output/              # 成片 + 字幕
 └── review.html
@@ -118,7 +124,14 @@ projects/subway/
 
 - **竖屏**：`aspect_ratio: "9:16"`
 - **省钱打样**：`image.resolution: "1K"`、`image.candidates: 2`、Seedance 的 `resolution: "720p"`；定稿后再 `--force` 用高规格重跑
-- **镜头衔接更顺**：`video.chain_end_frame: true`，用下一镜关键帧作本镜尾帧（动作会更受限）
+- **镜头衔接更顺（首帧 + 尾帧）**：`video.end_frame_mode`，也可在 `videos` 上用 `--end-frame` 临时指定（动作会更受限）
+  - `none`：只用首帧（默认）
+  - `next`：用下一镜的关键帧作本镜尾帧，镜头之间几乎无缝，但本镜结尾会被"拉"成下一镜的构图（旧配置 `chain_end_frame: true` 等同于此）
+  - `own`：先跑 `endframes` 为每镜单独生成尾帧并挑选。尾帧会参考本镜首帧（保持场景、光线、服装一致）和下一镜首帧（让切换方向、位置自然），`--no-bridge` 可关闭后者。分镜里可写 `end_frame_prompt` 描述尾帧，没写就按 `motion_prompt` 推出动作结束时的画面
+  - 支持尾帧的模型：Kling 3、Seedance 2、Wan 3、MiniMax H3（`end_image_field`）
+- **可选视频模型**：`kling3`（默认，支持角色参考图和声音克隆）、`seedance2`、`wan3`（Wan 3.0，原生音频，720p $0.14/秒）、`minimax3`（MiniMax H3，最短 5 秒，无原生对白，768P $0.06/秒）。用 `videos --model wan3` 临时切换。不同平台的内容审核尺度不同，某个模型拦截时可以换一个试
+- **配乐自动避让**：`assemble.bgm_ducking: true` 时，台词/音效响起会自动压低背景音乐（默认关闭）
+- **英文台词**：纯英文的台词（如英文咒语）会自动按英文朗读，不受 `dialogue_language` 影响
 - **背景音乐**：把 mp3 放进项目目录，`assemble.bgm: "assets/bgm.mp3"`
 - **转场**：`assemble.crossfade: 0.4`
 - **换模型**：在 `video.models` 下照格式加一项（fal 上的 endpoint + 图片字段名），例如 Veo 3.1、MiniMax H3
